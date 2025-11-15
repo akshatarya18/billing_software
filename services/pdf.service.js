@@ -238,74 +238,143 @@ class PDFService {
     return convertedRates;
   }
 
-  async _createBrowser() {
-    console.log("Creating new browser instance...");
-    const isWindows = process.platform === "win32";
-    const isDev = process.env.NODE_ENV !== "production";
+ async _createBrowser() {
+  console.log("Creating new browser instance...");
+  const isDev = process.env.NODE_ENV !== "production";
+  const isWindows = process.platform === "win32";
 
-    const launchOptions = {
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--no-first-run",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-renderer-backgrounding",
-        "--disable-features=TranslateUI,BlinkGenPropertyTrees",
-        "--disable-extensions",
-        "--disable-default-apps",
-        "--mute-audio",
-        "--no-default-browser-check",
-        "--disable-background-networking",
-        "--disable-sync",
-        "--disable-translate",
-        "--hide-scrollbars",
-        "--metrics-recording-only",
-        "--no-crash-upload",
-        "--disable-ipc-flooding-protection",
-        "--memory-pressure-off",
-        "--max_old_space_size=2048",
-        "--disable-software-rasterizer",
-        "--disable-component-extensions-with-background-pages",
-      ],
-      protocolTimeout: 180000,
-      timeout: 90000,
-      ...(isWindows && { pipe: true, dumpio: false }),
-    };
+  const launchOptions = {
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--no-first-run",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
+      "--disable-features=TranslateUI,BlinkGenPropertyTrees",
+      "--disable-extensions",
+      "--disable-default-apps",
+      "--mute-audio",
+      "--no-default-browser-check",
+      "--disable-background-networking",
+      "--disable-sync",
+      "--disable-translate",
+      "--hide-scrollbars",
+      "--metrics-recording-only",
+      "--no-crash-upload",
+      "--disable-ipc-flooding-protection",
+      "--memory-pressure-off",
+      "--max_old_space_size=2048",
+      "--disable-software-rasterizer",
+      "--disable-component-extensions-with-background-pages",
+    ],
+    protocolTimeout: 180000,
+    timeout: 90000,
+  };
 
-    // In production (Render), use @sparticuz/chromium
-    if (!isDev) {
+  // PRODUCTION: Use @sparticuz/chromium (for Render/AWS Lambda/etc)
+  if (!isDev) {
+    console.log("🚀 Production mode: Using @sparticuz/chromium");
+    try {
       launchOptions.executablePath = await chromium.executablePath();
       launchOptions.args = chromium.args.concat(launchOptions.args);
       launchOptions.headless = chromium.headless;
-    } else {
-      // Local dev: fallback to system Chrome
-      const fs = require("fs");
-      const paths = [
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/chromium",
-      ];
+      console.log("✅ Chromium executable found:", launchOptions.executablePath);
+    } catch (error) {
+      console.error("❌ Failed to get chromium executable path:", error);
+      throw new Error(
+        `Production chromium setup failed: ${error.message}. ` +
+        `Ensure @sparticuz/chromium is installed and NODE_ENV=production`
+      );
+    }
+  } 
+  // DEVELOPMENT: Find local Chrome/Chromium
+  else {
+    console.log("💻 Development mode: Looking for local Chrome installation");
+    
+    const possiblePaths = isWindows 
+      ? [
+          "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+          "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+          process.env.LOCALAPPDATA + "\\Google\\Chrome\\Application\\chrome.exe",
+          process.env.PROGRAMFILES + "\\Google\\Chrome\\Application\\chrome.exe",
+        ]
+      : process.platform === "darwin"
+      ? [
+          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+          "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+      : [
+          "/usr/bin/google-chrome-stable",
+          "/usr/bin/google-chrome",
+          "/usr/bin/chromium-browser",
+          "/usr/bin/chromium",
+          "/snap/bin/chromium",
+        ];
 
-      const execPath = paths.find((p) => {
-        try {
-          return fs.existsSync(p);
-        } catch {
-          return false;
+    let foundPath = null;
+    for (const testPath of possiblePaths) {
+      try {
+        if (fs.existsSync(testPath)) {
+          foundPath = testPath;
+          console.log(`✅ Found Chrome at: ${foundPath}`);
+          break;
         }
-      });
-
-      if (execPath) {
-        launchOptions.executablePath = execPath;
+      } catch (err) {
+        // Continue checking
       }
     }
 
-    return await puppeteer.launch(launchOptions);
+    if (foundPath) {
+      launchOptions.executablePath = foundPath;
+    } else if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+      // Check environment variable
+      launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+      console.log(`✅ Using Chrome from env: ${launchOptions.executablePath}`);
+    } else {
+      // Last resort: try to use @sparticuz/chromium even in dev
+      console.warn("⚠️ No local Chrome found, attempting to use @sparticuz/chromium...");
+      try {
+        launchOptions.executablePath = await chromium.executablePath();
+        launchOptions.args = chromium.args.concat(launchOptions.args);
+        launchOptions.headless = chromium.headless;
+        console.log("✅ Using @sparticuz/chromium as fallback");
+      } catch (chromiumError) {
+        console.error("❌ Chrome/Chromium not found anywhere!");
+        throw new Error(
+          "Chrome/Chromium not found. Options:\n" +
+          "1. Install Chrome: https://www.google.com/chrome/\n" +
+          "2. Install Chromium: sudo apt-get install chromium-browser\n" +
+          "3. Set PUPPETEER_EXECUTABLE_PATH environment variable\n" +
+          "4. Switch to full 'puppeteer' package (bundles Chromium)"
+        );
+      }
+    }
+
+    // Windows-specific optimizations
+    if (isWindows) {
+      launchOptions.pipe = true;
+      launchOptions.dumpio = false;
+    }
   }
+
+  console.log("🌐 Launching browser with executablePath:", launchOptions.executablePath);
+  
+  try {
+    const browser = await puppeteer.launch(launchOptions);
+    console.log("✅ Browser launched successfully");
+    return browser;
+  } catch (launchError) {
+    console.error("❌ Browser launch failed:", launchError.message);
+    throw new Error(
+      `Failed to launch browser: ${launchError.message}. ` +
+      `Check if Chrome/Chromium is properly installed and accessible.`
+    );
+  }
+}
 
   async initBrowser() {
     if (this.isInitializing && this.initPromise) {
